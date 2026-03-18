@@ -23,7 +23,7 @@ impl Command for UrlParse {
             .named(
                 "base",
                 SyntaxShape::String,
-                "Base URL used to resolve relative URLs (WHATWG-compatible).",
+                "Base URL used to resolve relative URLs.",
                 Some('b'),
             )
             .rest(
