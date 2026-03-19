@@ -346,8 +346,6 @@ fn ls_for_one_pattern(
         }
     }
 
-    let (tx, rx) = mpsc::channel();
-
     let Args {
         all,
         long,
@@ -468,11 +466,11 @@ fn ls_for_one_pattern(
         });
     }
 
-    let hidden_dirs = Arc::new(Mutex::new(Vec::new()));
+    if use_threads {
+        let hidden_dirs = Arc::new(Mutex::new(Vec::new()));
+        let signals_clone = signals.clone();
+        let (tx, rx) = mpsc::channel();
 
-    let signals_clone = signals.clone();
-
-    let pool = if use_threads {
         let count = std::thread::available_parallelism()
             .map_err(|err| {
                 IoError::new_with_additional_context(
@@ -483,138 +481,236 @@ fn ls_for_one_pattern(
                 )
             })?
             .get();
-        create_pool(count)?
-    } else {
-        create_pool(1)?
-    };
+        let pool = create_pool(count)?;
 
-    pool.install(|| {
-        rayon::spawn(move || {
-            let result = paths_peek
-                .par_bridge()
-                .filter_map(move |x| match x {
-                    Ok(entry) => {
-                        let hidden_dir_clone = Arc::clone(&hidden_dirs);
-                        let mut hidden_dir_mutex = hidden_dir_clone
-                            .lock()
-                            .expect("Unable to acquire lock for hidden_dirs");
-                        if path_contains_hidden_folder(&entry.path, &hidden_dir_mutex) {
-                            return None;
-                        }
-
-                        if !all && !hidden_dir_specified && entry.is_hidden() {
-                            if entry.is_dir() {
-                                hidden_dir_mutex.push(entry.path.clone());
-                                drop(hidden_dir_mutex);
+        pool.install(|| {
+            rayon::spawn(move || {
+                let result = paths_peek
+                    .par_bridge()
+                    .filter_map(move |x| match x {
+                        Ok(entry) => {
+                            let hidden_dir_clone = Arc::clone(&hidden_dirs);
+                            let mut hidden_dir_mutex = hidden_dir_clone
+                                .lock()
+                                .expect("Unable to acquire lock for hidden_dirs");
+                            if path_contains_hidden_folder(&entry.path, &hidden_dir_mutex) {
+                                return None;
                             }
-                            return None;
-                        }
-                        // Get reference to path first for display_name calculation
-                        let path = &entry.path;
 
-                        let display_name = if short_names {
-                            path.file_name().map(|os| os.to_string_lossy().to_string())
-                        } else if full_paths || absolute_path {
-                            Some(path.to_string_lossy().to_string())
-                        } else if let Some(prefix) = &prefix {
-                            if let Ok(remainder) = path.strip_prefix(prefix) {
-                                if directory {
-                                    // When the path is the same as the cwd, path_diff should be "."
-                                    let path_diff = if let Some(path_diff_not_dot) =
-                                        diff_paths(path, &cwd)
-                                    {
-                                        let path_diff_not_dot = path_diff_not_dot.to_string_lossy();
-                                        if path_diff_not_dot.is_empty() {
-                                            ".".to_string()
+                            if !all && !hidden_dir_specified && entry.is_hidden() {
+                                if entry.is_dir() {
+                                    hidden_dir_mutex.push(entry.path.clone());
+                                    drop(hidden_dir_mutex);
+                                }
+                                return None;
+                            }
+                            // Get reference to path first for display_name calculation
+                            let path = &entry.path;
+
+                            let display_name = if short_names {
+                                path.file_name().map(|os| os.to_string_lossy().to_string())
+                            } else if full_paths || absolute_path {
+                                Some(path.to_string_lossy().to_string())
+                            } else if let Some(prefix) = &prefix {
+                                if let Ok(remainder) = path.strip_prefix(prefix) {
+                                    if directory {
+                                        // When the path is the same as the cwd, path_diff should be "."
+                                        let path_diff = if let Some(path_diff_not_dot) =
+                                            diff_paths(path, &cwd)
+                                        {
+                                            let path_diff_not_dot =
+                                                path_diff_not_dot.to_string_lossy();
+                                            if path_diff_not_dot.is_empty() {
+                                                ".".to_string()
+                                            } else {
+                                                path_diff_not_dot.to_string()
+                                            }
                                         } else {
-                                            path_diff_not_dot.to_string()
-                                        }
-                                    } else {
-                                        path.to_string_lossy().to_string()
-                                    };
+                                            path.to_string_lossy().to_string()
+                                        };
 
-                                    Some(path_diff)
+                                        Some(path_diff)
+                                    } else {
+                                        let new_prefix = if let Some(pfx) = diff_paths(prefix, &cwd)
+                                        {
+                                            pfx
+                                        } else {
+                                            prefix.to_path_buf()
+                                        };
+
+                                        Some(
+                                            new_prefix
+                                                .join(remainder)
+                                                .to_string_lossy()
+                                                .to_string(),
+                                        )
+                                    }
                                 } else {
-                                    let new_prefix = if let Some(pfx) = diff_paths(prefix, &cwd) {
-                                        pfx
-                                    } else {
-                                        prefix.to_path_buf()
-                                    };
-
-                                    Some(new_prefix.join(remainder).to_string_lossy().to_string())
+                                    Some(path.to_string_lossy().to_string())
                                 }
                             } else {
                                 Some(path.to_string_lossy().to_string())
                             }
-                        } else {
-                            Some(path.to_string_lossy().to_string())
+                            .ok_or_else(|| ShellError::GenericError {
+                                error: format!("Invalid file name: {:}", path.to_string_lossy()),
+                                msg: "invalid file name".into(),
+                                span: Some(call_span),
+                                help: None,
+                                inner: vec![],
+                            });
+
+                            match display_name {
+                                Ok(name) => {
+                                    // Use cached metadata from LsEntry when available (free on Windows)
+                                    // On Unix, this will call symlink_metadata() but only once per entry
+                                    let metadata = entry.get_metadata();
+                                    // When full_paths is enabled, ensure path is absolute for symlink target expansion
+                                    let path_for_dict = if full_paths && !path.is_absolute() {
+                                        std::borrow::Cow::Owned(cwd.join(path))
+                                    } else {
+                                        std::borrow::Cow::Borrowed(path)
+                                    };
+                                    let result = dir_entry_dict(
+                                        &path_for_dict,
+                                        &name,
+                                        metadata.as_ref(),
+                                        call_span,
+                                        long,
+                                        du,
+                                        &signals_clone,
+                                        use_mime_type,
+                                        full_paths,
+                                    );
+                                    match result {
+                                        Ok(value) => Some(value),
+                                        Err(err) => Some(Value::error(err, call_span)),
+                                    }
+                                }
+                                Err(err) => Some(Value::error(err, call_span)),
+                            }
                         }
-                        .ok_or_else(|| ShellError::GenericError {
-                            error: format!("Invalid file name: {:}", path.to_string_lossy()),
-                            msg: "invalid file name".into(),
+                        Err(err) => Some(Value::error(err, call_span)),
+                    })
+                    .try_for_each(|stream| {
+                        tx.send(stream).map_err(|e| ShellError::GenericError {
+                            error: "Error streaming data".into(),
+                            msg: e.to_string(),
                             span: Some(call_span),
                             help: None,
                             inner: vec![],
-                        });
-
-                        match display_name {
-                            Ok(name) => {
-                                // Use cached metadata from LsEntry when available (free on Windows)
-                                // On Unix, this will call symlink_metadata() but only once per entry
-                                let metadata = entry.get_metadata();
-                                // When full_paths is enabled, ensure path is absolute for symlink target expansion
-                                let path_for_dict = if full_paths && !path.is_absolute() {
-                                    std::borrow::Cow::Owned(cwd.join(path))
-                                } else {
-                                    std::borrow::Cow::Borrowed(path)
-                                };
-                                let result = dir_entry_dict(
-                                    &path_for_dict,
-                                    &name,
-                                    metadata.as_ref(),
-                                    call_span,
-                                    long,
-                                    du,
-                                    &signals_clone,
-                                    use_mime_type,
-                                    full_paths,
-                                );
-                                match result {
-                                    Ok(value) => Some(value),
-                                    Err(err) => Some(Value::error(err, call_span)),
-                                }
-                            }
-                            Err(err) => Some(Value::error(err, call_span)),
-                        }
-                    }
-                    Err(err) => Some(Value::error(err, call_span)),
-                })
-                .try_for_each(|stream| {
-                    tx.send(stream).map_err(|e| ShellError::GenericError {
-                        error: "Error streaming data".into(),
-                        msg: e.to_string(),
+                        })
+                    })
+                    .map_err(|err| ShellError::GenericError {
+                        error: "Unable to create a rayon pool".into(),
+                        msg: err.to_string(),
                         span: Some(call_span),
                         help: None,
                         inner: vec![],
-                    })
-                })
-                .map_err(|err| ShellError::GenericError {
-                    error: "Unable to create a rayon pool".into(),
-                    msg: err.to_string(),
+                    });
+
+                if let Err(error) = result {
+                    let _ = tx.send(Value::error(error, call_span));
+                }
+            });
+        });
+
+        Ok(rx
+            .into_iter()
+            .into_pipeline_data(call_span, signals.clone()))
+    } else {
+        let mut hidden_dirs: Vec<PathBuf> = Vec::new();
+        let signals_clone = signals.clone();
+
+        let iter = paths_peek.filter_map(move |x| match x {
+            Ok(entry) => {
+                if path_contains_hidden_folder(&entry.path, &hidden_dirs) {
+                    return None;
+                }
+
+                if !all && !hidden_dir_specified && entry.is_hidden() {
+                    if entry.is_dir() {
+                        hidden_dirs.push(entry.path.clone());
+                    }
+                    return None;
+                }
+                // Get reference to path first for display_name calculation
+                let path = &entry.path;
+
+                let display_name = if short_names {
+                    path.file_name().map(|os| os.to_string_lossy().to_string())
+                } else if full_paths || absolute_path {
+                    Some(path.to_string_lossy().to_string())
+                } else if let Some(prefix) = &prefix {
+                    if let Ok(remainder) = path.strip_prefix(prefix) {
+                        if directory {
+                            let path_diff = if let Some(path_diff_not_dot) = diff_paths(path, &cwd)
+                            {
+                                let path_diff_not_dot = path_diff_not_dot.to_string_lossy();
+                                if path_diff_not_dot.is_empty() {
+                                    ".".to_string()
+                                } else {
+                                    path_diff_not_dot.to_string()
+                                }
+                            } else {
+                                path.to_string_lossy().to_string()
+                            };
+
+                            Some(path_diff)
+                        } else {
+                            let new_prefix = if let Some(pfx) = diff_paths(prefix, &cwd) {
+                                pfx
+                            } else {
+                                prefix.to_path_buf()
+                            };
+
+                            Some(new_prefix.join(remainder).to_string_lossy().to_string())
+                        }
+                    } else {
+                        Some(path.to_string_lossy().to_string())
+                    }
+                } else {
+                    Some(path.to_string_lossy().to_string())
+                }
+                .ok_or_else(|| ShellError::GenericError {
+                    error: format!("Invalid file name: {:}", path.to_string_lossy()),
+                    msg: "invalid file name".into(),
                     span: Some(call_span),
                     help: None,
                     inner: vec![],
                 });
 
-            if let Err(error) = result {
-                let _ = tx.send(Value::error(error, call_span));
+                match display_name {
+                    Ok(name) => {
+                        let metadata = entry.get_metadata();
+                        let path_for_dict = if full_paths && !path.is_absolute() {
+                            std::borrow::Cow::Owned(cwd.join(path))
+                        } else {
+                            std::borrow::Cow::Borrowed(path)
+                        };
+                        let result = dir_entry_dict(
+                            &path_for_dict,
+                            &name,
+                            metadata.as_ref(),
+                            call_span,
+                            long,
+                            du,
+                            &signals_clone,
+                            use_mime_type,
+                            full_paths,
+                        );
+                        match result {
+                            Ok(value) => Some(value),
+                            Err(err) => Some(Value::error(err, call_span)),
+                        }
+                    }
+                    Err(err) => Some(Value::error(err, call_span)),
+                }
             }
+            Err(err) => Some(Value::error(err, call_span)),
         });
-    });
 
-    Ok(rx
-        .into_iter()
-        .into_pipeline_data(call_span, signals.clone()))
+        Ok(iter.into_pipeline_data(call_span, signals.clone()))
+    }
 }
 
 fn is_hidden_dir(dir: impl AsRef<Path>) -> bool {

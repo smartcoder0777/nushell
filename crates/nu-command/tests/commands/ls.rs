@@ -802,3 +802,26 @@ fn consistent_list_order() {
         assert_eq!(no_arg.out, with_arg.out);
     })
 }
+
+#[test]
+fn ls_inside_par_each_many_items_does_not_overflow_stack() {
+    Playground::setup("ls_test_par_each_stack_overflow", |dirs, _sandbox| {
+        let dir = dirs.test().join("img");
+        std::fs::create_dir_all(&dir).expect("failed to create test directory");
+
+        let file_count = 5000usize;
+        for i in 0..file_count {
+            let file_path = dir.join(format!("f{i}.dat"));
+            std::fs::write(file_path, b"").expect("failed to create test file");
+        }
+
+        let actual = nu!(cwd: dirs.test(), format!(r#"
+            let files = (glob "{}/**/*" --no-dir);
+            let results = ($files | par-each --threads 1 {{ |p| (ls $p | first).size }});
+            $results | length
+        "#, "./img"));
+
+        assert_eq!(actual.out, file_count.to_string());
+        assert!(actual.err.is_empty());
+    });
+}
