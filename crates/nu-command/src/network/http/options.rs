@@ -232,6 +232,9 @@ fn helper(
         span,
         args.allow_errors,
     )?;
+    // In the default (non-`--full`) mode we return only headers, but the HTTP client must still
+    // fully read the response body to complete the request (timeouts, chunked bodies, etc.).
+    // The `--full` path uses `request_handle_response`, which already consumes the body.
     discard_response_body(response, span)?;
     headers_to_nu(&response_headers, span)
 }
