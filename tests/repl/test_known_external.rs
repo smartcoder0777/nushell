@@ -36,7 +36,7 @@ fn known_external_subcommand_alias() -> TestResult {
 #[test]
 fn known_external_alias_shadows_decl_name() -> TestResult {
     run_test_contains(
-        r#"extern echo []; alias old-echo = echo; alias echo = old-echo hello; echo"#,
+        "extern echo []; alias old-echo = echo; alias echo = old-echo hello; echo",
         "hello",
     )
 }
@@ -44,7 +44,7 @@ fn known_external_alias_shadows_decl_name() -> TestResult {
 /// GitHub issue #17854
 #[test]
 fn known_external_self_referential_alias() -> TestResult {
-    run_test_contains(r#"extern echo []; alias echo = echo hello; echo"#, "hello")
+    run_test_contains("extern echo []; alias echo = echo hello; echo", "hello")
 }
 
 #[test]
