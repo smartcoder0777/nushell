@@ -119,7 +119,7 @@ impl Command for Last {
 
                 if return_single_element {
                     if let Some(last) = buf.pop_back() {
-                        Ok(last.into_pipeline_data())
+                        Ok(last.into_pipeline_data_with_metadata(metadata.clone()))
                     } else if strict_mode {
                         Err(ShellError::AccessEmptyContent { span: head })
                     } else {
@@ -137,7 +137,7 @@ impl Command for Last {
                     Value::List { mut vals, .. } => {
                         if return_single_element {
                             if let Some(v) = vals.pop() {
-                                Ok(v.into_pipeline_data())
+                                Ok(v.into_pipeline_data_with_metadata(metadata.clone()))
                             } else if strict_mode {
                                 Err(ShellError::AccessEmptyContent { span: head })
                             } else {
@@ -152,20 +152,24 @@ impl Command for Last {
                         }
                     }
                     Value::Binary { mut val, .. } => {
+                        let binary_meta = metadata.clone().map(|m| m.with_content_type(None));
                         if return_single_element {
                             if let Some(val) = val.pop() {
-                                Ok(Value::int(val.into(), span).into_pipeline_data())
+                                Ok(Value::int(val.into(), span)
+                                    .into_pipeline_data_with_metadata(binary_meta))
                             } else if strict_mode {
                                 Err(ShellError::AccessEmptyContent { span: head })
                             } else {
                                 // There are no values, so return nothing instead of an error so
                                 // that users can pipe this through 'default' if they want to.
-                                Ok(Value::nothing(head).into_pipeline_data_with_metadata(metadata))
+                                Ok(Value::nothing(head)
+                                    .into_pipeline_data_with_metadata(binary_meta))
                             }
                         } else {
                             let i = val.len().saturating_sub(rows);
                             val.drain(..i);
-                            Ok(Value::binary(val, span).into_pipeline_data())
+                            Ok(Value::binary(val, span)
+                                .into_pipeline_data_with_metadata(binary_meta))
                         }
                     }
                     // Propagate errors by explicitly matching them before the final case.
@@ -190,7 +194,7 @@ impl Command for Last {
                                 let value = result.into_value(head)?;
                                 if let Value::List { vals, .. } = value {
                                     if let Some(val) = vals.into_iter().next() {
-                                        Ok(val.into_pipeline_data())
+                                        Ok(val.into_pipeline_data_with_metadata(metadata.clone()))
                                     } else if strict_mode {
                                         Err(ShellError::AccessEmptyContent { span: head })
                                     } else {
@@ -242,6 +246,7 @@ impl Command for Last {
             PipelineData::ByteStream(stream, ..) => {
                 if stream.type_().is_binary_coercible() {
                     let span = stream.span();
+                    let byte_meta = metadata.clone().map(|m| m.with_content_type(None));
                     if let Some(mut reader) = stream.reader() {
                         // Have to be a bit tricky here, but just consume into a VecDeque that we
                         // shrink to fit each time
@@ -257,19 +262,19 @@ impl Command for Last {
                                 // This must be EOF.
                                 if return_single_element {
                                     if !buf.is_empty() {
-                                        return Ok(
-                                            Value::int(buf[0] as i64, head).into_pipeline_data()
-                                        );
+                                        return Ok(Value::int(buf[0] as i64, head)
+                                            .into_pipeline_data_with_metadata(byte_meta.clone()));
                                     } else if strict_mode {
                                         return Err(ShellError::AccessEmptyContent { span: head });
                                     } else {
                                         // There are no values, so return nothing instead of an error so
                                         // that users can pipe this through 'default' if they want to.
                                         return Ok(Value::nothing(head)
-                                            .into_pipeline_data_with_metadata(metadata));
+                                            .into_pipeline_data_with_metadata(byte_meta));
                                     }
                                 } else {
-                                    return Ok(Value::binary(buf, head).into_pipeline_data());
+                                    return Ok(Value::binary(buf, head)
+                                        .into_pipeline_data_with_metadata(byte_meta));
                                 }
                             }
                         }
