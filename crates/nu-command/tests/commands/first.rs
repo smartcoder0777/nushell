@@ -1,7 +1,16 @@
 use nu_protocol::{
-    IntRange, IntoPipelineData, PipelineMetadata, Range, Span, Value, ast::RangeInclusion,
+    IntRange, IntoPipelineData, ListStream, PipelineData, PipelineMetadata, Range, Signals, Span,
+    Value, ast::RangeInclusion,
 };
 use nu_test_support::{fs::Stub::EmptyFile, prelude::*};
+use rstest::rstest;
+
+#[derive(Clone, Copy)]
+enum InputKind {
+    List,
+    Range,
+    ListStream,
+}
 
 fn range_1_to_3_exclusive() -> Value {
     let r = IntRange::new(
@@ -13,6 +22,23 @@ fn range_1_to_3_exclusive() -> Value {
     )
     .expect("valid int range");
     Value::test_range(Range::IntRange(r))
+}
+
+fn pipeline_data_with_metadata(kind: InputKind, meta: Option<PipelineMetadata>) -> PipelineData {
+    let span = Span::test_data();
+    match kind {
+        InputKind::List => Value::test_list(vec![Value::test_int(1), Value::test_int(2)])
+            .into_pipeline_data_with_metadata(meta),
+        InputKind::Range => range_1_to_3_exclusive().into_pipeline_data_with_metadata(meta),
+        InputKind::ListStream => {
+            let stream = ListStream::new(
+                vec![Value::test_int(1), Value::test_int(2)].into_iter(),
+                span,
+                Signals::empty(),
+            );
+            PipelineData::list_stream(stream, meta)
+        }
+    }
 }
 
 #[test]
@@ -145,31 +171,27 @@ fn wrapping_first_with_optional_explicit_rows() -> Result {
     test().run(code).expect_value_eq(2)
 }
 
-#[test]
-fn first_preserves_pipeline_metadata_on_list() -> Result {
+#[rstest]
+#[case::list_first(InputKind::List, "first")]
+#[case::list_first_n(InputKind::List, "first 2")]
+#[case::list_last(InputKind::List, "last")]
+#[case::list_last_n(InputKind::List, "last 2")]
+#[case::range_first(InputKind::Range, "first")]
+#[case::range_first_n(InputKind::Range, "first 2")]
+#[case::range_last(InputKind::Range, "last")]
+#[case::range_last_n(InputKind::Range, "last 2")]
+#[case::list_stream_first(InputKind::ListStream, "first")]
+#[case::list_stream_first_n(InputKind::ListStream, "first 2")]
+#[case::list_stream_last(InputKind::ListStream, "last")]
+#[case::list_stream_last_n(InputKind::ListStream, "last 2")]
+fn first_last_preserves_pipeline_metadata(#[case] input: InputKind, #[case] code: &str) -> Result {
     let in_meta = Some(
         PipelineMetadata::default()
             .with_content_type(Some("text/x-test".into()))
             .with_path_columns(vec!["name".into()]),
     );
-    let data = Value::test_list(vec![Value::test_int(1), Value::test_int(2)])
-        .into_pipeline_data_with_metadata(in_meta.clone());
-    let out = test()
-        .run_raw_with_data("first", data)?
-        .body
-        .take_metadata();
-    assert_eq!(in_meta, out);
-    Ok(())
-}
-
-#[test]
-fn first_preserves_pipeline_metadata_on_range() -> Result {
-    let in_meta = Some(PipelineMetadata::default().with_content_type(Some("text/x-test".into())));
-    let data = range_1_to_3_exclusive().into_pipeline_data_with_metadata(in_meta.clone());
-    let out = test()
-        .run_raw_with_data("first", data)?
-        .body
-        .take_metadata();
+    let data = pipeline_data_with_metadata(input, in_meta.clone());
+    let out = test().run_raw_with_data(code, data)?.body.take_metadata();
     assert_eq!(in_meta, out);
     Ok(())
 }
