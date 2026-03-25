@@ -98,14 +98,19 @@ impl Command for Last {
         let mut input = input;
         let metadata = input.take_metadata();
 
-        // early exit for `last 0`
+        // Count is 0: return empty data immediately.
+        //
+        // The main `match` below is not safe for this case-`last` reads binary streams in chunks
+        // and sqlite paths may still execute. For "take nothing" we only produce an empty value:
+        // empty binary (and clear pipeline `content_type` for binary) or an empty list, with other
+        // metadata unchanged.
         if rows == 0 {
             return match input {
-                PipelineData::Value(Value::Binary { internal_span, .. }, _) => Ok(Value::binary(
-                    Vec::new(),
-                    internal_span,
-                )
-                .into_pipeline_data_with_metadata(metadata.map(|m| m.with_content_type(None)))),
+                PipelineData::Value(val, _) if matches!(&val, Value::Binary { .. }) => Ok(
+                    Value::binary(Vec::new(), val.span()).into_pipeline_data_with_metadata(
+                        metadata.map(|m| m.with_content_type(None)),
+                    ),
+                ),
                 PipelineData::ByteStream(stream, _) => {
                     if stream.type_().is_binary_coercible() {
                         let span = stream.span();

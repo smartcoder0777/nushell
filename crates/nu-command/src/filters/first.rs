@@ -110,14 +110,19 @@ fn first_helper(
     let mut input = input;
     let input_meta = input.take_metadata();
 
-    // early exit for `first 0`
+    // Count is 0: return empty data immediately.
+    //
+    // The main `match` below is not safe for this case-byte streams can still be read from the
+    // pipe, and sqlite lazy queries can still run. For "take nothing" we only produce an empty
+    // value: empty binary (and clear pipeline `content_type` for binary) or an empty list, with
+    // other metadata unchanged.
     if rows == 0 {
         return match input {
-            PipelineData::Value(Value::Binary { internal_span, .. }, _) => Ok(Value::binary(
-                Vec::new(),
-                internal_span,
-            )
-            .into_pipeline_data_with_metadata(input_meta.map(|m| m.with_content_type(None)))),
+            PipelineData::Value(val, _) if matches!(&val, Value::Binary { .. }) => Ok(
+                Value::binary(Vec::new(), val.span()).into_pipeline_data_with_metadata(
+                    input_meta.map(|m| m.with_content_type(None)),
+                ),
+            ),
             PipelineData::ByteStream(stream, _) => {
                 if stream.type_().is_binary_coercible() {
                     let span = stream.span();
