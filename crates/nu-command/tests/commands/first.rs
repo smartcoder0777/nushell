@@ -31,7 +31,9 @@ fn pipeline_data_with_metadata(kind: InputKind, meta: Option<PipelineMetadata>) 
         InputKind::List => Value::test_list(vec![Value::test_int(1), Value::test_int(2)])
             .into_pipeline_data_with_metadata(meta),
         InputKind::Range => range_1_to_3_exclusive().into_pipeline_data_with_metadata(meta),
-        InputKind::Binary => Value::binary(vec![1, 2, 3], span).into_pipeline_data_with_metadata(meta),
+        InputKind::Binary => {
+            Value::binary(vec![1, 2, 3], span).into_pipeline_data_with_metadata(meta)
+        }
         InputKind::ListStream => {
             let stream = ListStream::new(
                 vec![Value::test_int(1), Value::test_int(2)].into_iter(),
@@ -191,9 +193,7 @@ fn first_preserves_pipeline_metadata(#[case] input: InputKind, #[case] code: &st
     let data = pipeline_data_with_metadata(input, in_meta.clone());
     let out = test().run_raw_with_data(code, data)?.body.take_metadata();
     let expected = if matches!(input, InputKind::Binary) {
-        in_meta
-            .clone()
-            .map(|m| m.with_content_type(None))
+        in_meta.clone().map(|m| m.with_content_type(None))
     } else {
         in_meta.clone()
     };

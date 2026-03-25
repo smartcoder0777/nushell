@@ -101,19 +101,24 @@ impl Command for Last {
         // early exit for `last 0`
         if rows == 0 {
             return match input {
-                PipelineData::Value(Value::Binary { internal_span, .. }, _) => Ok(
-                    Value::binary(Vec::new(), internal_span).into_pipeline_data_with_metadata(
-                        metadata.map(|m| m.with_content_type(None)),
-                    ),
-                ),
+                PipelineData::Value(Value::Binary { internal_span, .. }, _) => Ok(Value::binary(
+                    Vec::new(),
+                    internal_span,
+                )
+                .into_pipeline_data_with_metadata(metadata.map(|m| m.with_content_type(None)))),
                 PipelineData::ByteStream(stream, _) => {
                     if stream.type_().is_binary_coercible() {
                         let span = stream.span();
-                        Ok(Value::binary(Vec::new(), span).into_pipeline_data_with_metadata(
-                            metadata.map(|m| m.with_content_type(None)),
-                        ))
+                        Ok(
+                            Value::binary(Vec::new(), span).into_pipeline_data_with_metadata(
+                                metadata.map(|m| m.with_content_type(None)),
+                            ),
+                        )
                     } else {
-                        Ok(Value::list(Vec::new(), head).into_pipeline_data_with_metadata(metadata))
+                        Ok(
+                            Value::list(Vec::new(), head)
+                                .into_pipeline_data_with_metadata(metadata),
+                        )
                     }
                 }
                 _ => Ok(Value::list(Vec::new(), head).into_pipeline_data_with_metadata(metadata)),

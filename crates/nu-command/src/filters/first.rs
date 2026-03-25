@@ -113,17 +113,19 @@ fn first_helper(
     // early exit for `first 0`
     if rows == 0 {
         return match input {
-            PipelineData::Value(Value::Binary { internal_span, .. }, _) => Ok(
-                Value::binary(Vec::new(), internal_span).into_pipeline_data_with_metadata(
-                    input_meta.map(|m| m.with_content_type(None)),
-                ),
-            ),
+            PipelineData::Value(Value::Binary { internal_span, .. }, _) => Ok(Value::binary(
+                Vec::new(),
+                internal_span,
+            )
+            .into_pipeline_data_with_metadata(input_meta.map(|m| m.with_content_type(None)))),
             PipelineData::ByteStream(stream, _) => {
                 if stream.type_().is_binary_coercible() {
                     let span = stream.span();
-                    Ok(Value::binary(Vec::new(), span).into_pipeline_data_with_metadata(
-                        input_meta.map(|m| m.with_content_type(None)),
-                    ))
+                    Ok(
+                        Value::binary(Vec::new(), span).into_pipeline_data_with_metadata(
+                            input_meta.map(|m| m.with_content_type(None)),
+                        ),
+                    )
                 } else {
                     Ok(Value::list(Vec::new(), head).into_pipeline_data_with_metadata(input_meta))
                 }
@@ -139,8 +141,7 @@ fn first_helper(
                 Value::List { mut vals, .. } => {
                     if return_single_element {
                         if let Some(val) = vals.first_mut() {
-                            Ok(std::mem::take(val)
-                                .into_pipeline_data_with_metadata(input_meta))
+                            Ok(std::mem::take(val).into_pipeline_data_with_metadata(input_meta))
                         } else if strict_mode {
                             Err(ShellError::AccessEmptyContent { span: head })
                         } else {
