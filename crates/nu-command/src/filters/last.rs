@@ -95,11 +95,29 @@ impl Command for Last {
             1
         };
 
-        let metadata = input.metadata();
+        let mut input = input;
+        let metadata = input.take_metadata();
 
         // early exit for `last 0`
         if rows == 0 {
-            return Ok(Value::list(Vec::new(), head).into_pipeline_data_with_metadata(metadata));
+            return match input {
+                PipelineData::Value(Value::Binary { internal_span, .. }, _) => Ok(
+                    Value::binary(Vec::new(), internal_span).into_pipeline_data_with_metadata(
+                        metadata.map(|m| m.with_content_type(None)),
+                    ),
+                ),
+                PipelineData::ByteStream(stream, _) => {
+                    if stream.type_().is_binary_coercible() {
+                        let span = stream.span();
+                        Ok(Value::binary(Vec::new(), span).into_pipeline_data_with_metadata(
+                            metadata.map(|m| m.with_content_type(None)),
+                        ))
+                    } else {
+                        Ok(Value::list(Vec::new(), head).into_pipeline_data_with_metadata(metadata))
+                    }
+                }
+                _ => Ok(Value::list(Vec::new(), head).into_pipeline_data_with_metadata(metadata)),
+            };
         }
 
         match input {
@@ -119,7 +137,7 @@ impl Command for Last {
 
                 if return_single_element {
                     if let Some(last) = buf.pop_back() {
-                        Ok(last.into_pipeline_data_with_metadata(metadata.clone()))
+                        Ok(last.into_pipeline_data_with_metadata(metadata))
                     } else if strict_mode {
                         Err(ShellError::AccessEmptyContent { span: head })
                     } else {
@@ -137,7 +155,7 @@ impl Command for Last {
                     Value::List { mut vals, .. } => {
                         if return_single_element {
                             if let Some(v) = vals.pop() {
-                                Ok(v.into_pipeline_data_with_metadata(metadata.clone()))
+                                Ok(v.into_pipeline_data_with_metadata(metadata))
                             } else if strict_mode {
                                 Err(ShellError::AccessEmptyContent { span: head })
                             } else {
@@ -152,7 +170,7 @@ impl Command for Last {
                         }
                     }
                     Value::Binary { mut val, .. } => {
-                        let binary_meta = metadata.clone().map(|m| m.with_content_type(None));
+                        let binary_meta = metadata.map(|m| m.with_content_type(None));
                         if return_single_element {
                             if let Some(val) = val.pop() {
                                 Ok(Value::int(val.into(), span)
@@ -194,7 +212,7 @@ impl Command for Last {
                                 let value = result.into_value(head)?;
                                 if let Value::List { vals, .. } = value {
                                     if let Some(val) = vals.into_iter().next() {
-                                        Ok(val.into_pipeline_data_with_metadata(metadata.clone()))
+                                        Ok(val.into_pipeline_data_with_metadata(metadata))
                                     } else if strict_mode {
                                         Err(ShellError::AccessEmptyContent { span: head })
                                     } else {
@@ -246,7 +264,7 @@ impl Command for Last {
             PipelineData::ByteStream(stream, ..) => {
                 if stream.type_().is_binary_coercible() {
                     let span = stream.span();
-                    let byte_meta = metadata.clone().map(|m| m.with_content_type(None));
+                    let byte_meta = metadata.map(|m| m.with_content_type(None));
                     if let Some(mut reader) = stream.reader() {
                         // Have to be a bit tricky here, but just consume into a VecDeque that we
                         // shrink to fit each time
@@ -263,7 +281,7 @@ impl Command for Last {
                                 if return_single_element {
                                     if !buf.is_empty() {
                                         return Ok(Value::int(buf[0] as i64, head)
-                                            .into_pipeline_data_with_metadata(byte_meta.clone()));
+                                            .into_pipeline_data_with_metadata(byte_meta));
                                     } else if strict_mode {
                                         return Err(ShellError::AccessEmptyContent { span: head });
                                     } else {
@@ -279,7 +297,7 @@ impl Command for Last {
                             }
                         }
                     } else {
-                        Ok(PipelineData::empty())
+                        Ok(Value::nothing(head).into_pipeline_data_with_metadata(byte_meta))
                     }
                 } else {
                     Err(ShellError::OnlySupportsThisInputType {

@@ -107,11 +107,29 @@ fn first_helper(
         1
     };
 
-    let input_meta = input.metadata();
+    let mut input = input;
+    let input_meta = input.take_metadata();
 
     // early exit for `first 0`
     if rows == 0 {
-        return Ok(Value::list(Vec::new(), head).into_pipeline_data_with_metadata(input_meta));
+        return match input {
+            PipelineData::Value(Value::Binary { internal_span, .. }, _) => Ok(
+                Value::binary(Vec::new(), internal_span).into_pipeline_data_with_metadata(
+                    input_meta.map(|m| m.with_content_type(None)),
+                ),
+            ),
+            PipelineData::ByteStream(stream, _) => {
+                if stream.type_().is_binary_coercible() {
+                    let span = stream.span();
+                    Ok(Value::binary(Vec::new(), span).into_pipeline_data_with_metadata(
+                        input_meta.map(|m| m.with_content_type(None)),
+                    ))
+                } else {
+                    Ok(Value::list(Vec::new(), head).into_pipeline_data_with_metadata(input_meta))
+                }
+            }
+            _ => Ok(Value::list(Vec::new(), head).into_pipeline_data_with_metadata(input_meta)),
+        };
     }
 
     match input {
@@ -122,7 +140,7 @@ fn first_helper(
                     if return_single_element {
                         if let Some(val) = vals.first_mut() {
                             Ok(std::mem::take(val)
-                                .into_pipeline_data_with_metadata(input_meta.clone()))
+                                .into_pipeline_data_with_metadata(input_meta))
                         } else if strict_mode {
                             Err(ShellError::AccessEmptyContent { span: head })
                         } else {
@@ -137,7 +155,7 @@ fn first_helper(
                 }
                 Value::Binary { mut val, .. } => {
                     // A slice (or single byte as int) is not the whole file/stream; drop MIME.
-                    let binary_meta = input_meta.clone().map(|m| m.with_content_type(None));
+                    let binary_meta = input_meta.map(|m| m.with_content_type(None));
                     if return_single_element {
                         if let Some(&val) = val.first() {
                             Ok(Value::int(val.into(), span)
@@ -158,7 +176,7 @@ fn first_helper(
                     let mut iter = val.into_range_iter(span, Signals::empty());
                     if return_single_element {
                         if let Some(v) = iter.next() {
-                            Ok(v.into_pipeline_data_with_metadata(input_meta.clone()))
+                            Ok(v.into_pipeline_data_with_metadata(input_meta))
                         } else if strict_mode {
                             Err(ShellError::AccessEmptyContent { span: head })
                         } else {
@@ -191,7 +209,7 @@ fn first_helper(
                             let value = result.into_value(head)?;
                             if let Value::List { vals, .. } = value {
                                 if let Some(val) = vals.into_iter().next() {
-                                    Ok(val.into_pipeline_data_with_metadata(input_meta.clone()))
+                                    Ok(val.into_pipeline_data_with_metadata(input_meta))
                                 } else if strict_mode {
                                     Err(ShellError::AccessEmptyContent { span: head })
                                 } else {
@@ -208,7 +226,9 @@ fn first_helper(
                         } else {
                             // For multiple, limit rows
                             let new_table = table.clone().with_limit(rows as i64);
-                            new_table.execute(head)
+                            new_table
+                                .execute(head)
+                                .map(|data| data.set_metadata(input_meta))
                         }
                     } else {
                         Err(ShellError::OnlySupportsThisInputType {
@@ -227,28 +247,28 @@ fn first_helper(
                 }),
             }
         }
-        PipelineData::ListStream(stream, stream_meta) => {
+        PipelineData::ListStream(stream, _) => {
             if return_single_element {
                 if let Some(v) = stream.into_iter().next() {
-                    Ok(v.into_pipeline_data_with_metadata(stream_meta.clone()))
+                    Ok(v.into_pipeline_data_with_metadata(input_meta))
                 } else if strict_mode {
                     Err(ShellError::AccessEmptyContent { span: head })
                 } else {
                     // There are no values, so return nothing instead of an error so
                     // that users can pipe this through 'default' if they want to.
-                    Ok(Value::nothing(head).into_pipeline_data_with_metadata(stream_meta))
+                    Ok(Value::nothing(head).into_pipeline_data_with_metadata(input_meta))
                 }
             } else {
                 Ok(PipelineData::list_stream(
                     stream.modify(|iter| iter.take(rows)),
-                    stream_meta,
+                    input_meta,
                 ))
             }
         }
-        PipelineData::ByteStream(stream, byte_meta) => {
+        PipelineData::ByteStream(stream, _) => {
             if stream.type_().is_binary_coercible() {
                 let span = stream.span();
-                let metadata = byte_meta.map(|m| m.with_content_type(None));
+                let metadata = input_meta.map(|m| m.with_content_type(None));
                 if let Some(mut reader) = stream.reader() {
                     if return_single_element {
                         // Take a single byte
@@ -276,7 +296,7 @@ fn first_helper(
                         ))
                     }
                 } else {
-                    Ok(PipelineData::empty())
+                    Ok(Value::nothing(head).into_pipeline_data_with_metadata(metadata))
                 }
             } else {
                 Err(ShellError::OnlySupportsThisInputType {
