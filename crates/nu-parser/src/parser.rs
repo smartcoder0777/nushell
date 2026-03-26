@@ -5466,7 +5466,27 @@ pub fn parse_value(
     match bytes[0] {
         b'$' => return parse_dollar_expr(working_set, span),
         b'(' => return parse_paren_expr(working_set, span, shape),
-        b'{' => return parse_brace_expr(working_set, span, shape),
+        b'{' => {
+            // If a braced value is followed by a cell path (e.g. `{}.foo?`), parse it as a
+            // full cell path so the head span is only the braced part.
+            let (tokens, _) = lex(
+                bytes,
+                span.start,
+                &[b'\n', b'\r'],
+                &[b'.', b'?', b'!'],
+                true,
+            );
+
+            if tokens.len() > 1 {
+                let first = working_set.get_span_contents(tokens[0].span);
+                let second = working_set.get_span_contents(tokens[1].span);
+                if first.starts_with(b"{") && matches!(second, b"." | b"?" | b"!") {
+                    return parse_full_cell_path(working_set, None, span);
+                }
+            }
+
+            return parse_brace_expr(working_set, span, shape);
+        }
         b'[' => match shape {
             SyntaxShape::Any
             | SyntaxShape::List(_)
