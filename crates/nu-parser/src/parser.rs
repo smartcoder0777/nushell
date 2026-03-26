@@ -2217,6 +2217,27 @@ pub fn parse_brace_expr(
         return Expression::garbage(working_set, span);
     }
 
+    // Handle cases like `{}.foo?` where the parser gives us a wider span than just
+    // the braced value. In that case we should parse as full cell path.
+    let full_span_bytes = working_set.get_span_contents(span);
+    if !full_span_bytes.ends_with(b"}") {
+        let (tokens, _) = lex(
+            full_span_bytes,
+            span.start,
+            &[b'\r', b'\n'],
+            &[b'.', b'?', b'!'],
+            true,
+        );
+
+        if tokens.len() > 1 {
+            let first = working_set.get_span_contents(tokens[0].span);
+            let second = working_set.get_span_contents(tokens[1].span);
+            if first.starts_with(b"{") && matches!(second, b"." | b"?" | b"!") {
+                return parse_full_cell_path(working_set, None, span);
+            }
+        }
+    }
+
     let bytes = working_set.get_span_contents(Span::new(span.start + 1, span.end - 1));
     let (tokens, _) = lex(bytes, span.start + 1, &[b'\r', b'\n', b'\t'], &[b':'], true);
 
@@ -5466,27 +5487,7 @@ pub fn parse_value(
     match bytes[0] {
         b'$' => return parse_dollar_expr(working_set, span),
         b'(' => return parse_paren_expr(working_set, span, shape),
-        b'{' => {
-            // If a braced value is followed by a cell path (e.g. `{}.foo?`), parse it as a
-            // full cell path so the head span is only the braced part.
-            let (tokens, _) = lex(
-                bytes,
-                span.start,
-                &[b'\n', b'\r'],
-                &[b'.', b'?', b'!'],
-                true,
-            );
-
-            if tokens.len() > 1 {
-                let first = working_set.get_span_contents(tokens[0].span);
-                let second = working_set.get_span_contents(tokens[1].span);
-                if first.starts_with(b"{") && matches!(second, b"." | b"?" | b"!") {
-                    return parse_full_cell_path(working_set, None, span);
-                }
-            }
-
-            return parse_brace_expr(working_set, span, shape);
-        }
+        b'{' => return parse_brace_expr(working_set, span, shape),
         b'[' => match shape {
             SyntaxShape::Any
             | SyntaxShape::List(_)
