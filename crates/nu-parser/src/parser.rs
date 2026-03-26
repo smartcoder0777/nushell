@@ -2216,123 +2216,17 @@ pub fn parse_brace_expr(
         ));
         return Expression::garbage(working_set, span);
     }
-
-    // Find the matching `}` for the leading `{` in this span.
-    //
-    // In some cases the parser hands us a wider span than just the braced value.
-    // For example, with `{}.foo?` the span may cover `{}` plus `.foo?`.
-    // Here we split out the braced part for record/closure parsing, and keep `span`
-    // intact for full cell path parsing.
-    let full_span_bytes = working_set.get_span_contents(span);
-
-    let mut brace_depth: i32 = 0;
-    let mut quote: Option<u8> = None;
-    let mut escape = false;
-    let mut brace_close_idx: Option<usize> = None;
-    let mut i = 0usize;
-
-    while i < full_span_bytes.len() {
-        let c = full_span_bytes[i];
-
-        if let Some(q) = quote {
-            if escape {
-                escape = false;
-            } else if q == b'"' && c == b'\\' {
-                escape = true;
-            } else if c == q {
-                quote = None;
-            }
-
-            i += 1;
-            continue;
-        }
-
-        // Handle raw strings like r#'...'#
-        if c == b'r' {
-            let mut j = i + 1;
-            let mut hashes = 0usize;
-            while j < full_span_bytes.len() && full_span_bytes[j] == b'#' {
-                hashes += 1;
-                j += 1;
-            }
-
-            if j < full_span_bytes.len() && full_span_bytes[j] == b'\'' {
-                // Scan until closing: '\'' + hashes * '#'
-                let raw_body_start = j + 1;
-                let mut k = raw_body_start;
-                while k < full_span_bytes.len() {
-                    if full_span_bytes[k] == b'\'' {
-                        let end_hashes_start = k + 1;
-                        if end_hashes_start + hashes <= full_span_bytes.len()
-                            && full_span_bytes[end_hashes_start..end_hashes_start + hashes]
-                                .iter()
-                                .all(|b| *b == b'#')
-                        {
-                            i = end_hashes_start + hashes;
-                            break;
-                        }
-                    }
-                    k += 1;
-                }
-
-                // If we didn't find the end of the raw string, fall back to brace scanning.
-                if i <= k {
-                    i = raw_body_start;
-                }
-                continue;
-            }
-        }
-
-        match c {
-            b'\'' | b'"' | b'`' => {
-                quote = Some(c);
-                i += 1;
-                continue;
-            }
-            b'{' => brace_depth += 1,
-            b'}' => {
-                brace_depth -= 1;
-                if brace_depth == 0 {
-                    brace_close_idx = Some(i);
-                    break;
-                }
-            }
-            _ => {}
-        }
-
-        i += 1;
-    }
-
-    let brace_close_idx = brace_close_idx.unwrap_or(full_span_bytes.len() - 1);
-    let brace_span = Span::new(span.start, span.start + brace_close_idx + 1);
-    let has_cell_path_tail = full_span_bytes.get(brace_close_idx + 1) == Some(&b'.');
-
-    let bytes = working_set.get_span_contents(Span::new(brace_span.start + 1, brace_span.end - 1));
-    let (tokens, _) = lex(
-        bytes,
-        brace_span.start + 1,
-        &[b'\r', b'\n', b'\t'],
-        &[b':'],
-        true,
-    );
+    let bytes = working_set.get_span_contents(Span::new(span.start + 1, span.end - 1));
+    let (tokens, _) = lex(bytes, span.start + 1, &[b'\r', b'\n', b'\t'], &[b':'], true);
 
     match tokens.as_slice() {
         // If we're empty, that means an empty record or closure
-        [] => {
-            // If the braced value is empty (i.e. `{}`) but the overall span is `{}.foo?`,
-            // route through full cell path parsing so the missing field short-circuits
-            // correctly to `null`.
-            if has_cell_path_tail {
-                return parse_full_cell_path(working_set, None, span);
-            }
-
-            match shape {
-                SyntaxShape::Closure(_) => parse_closure_expression(working_set, shape, brace_span),
-                SyntaxShape::Block => parse_block_expression(working_set, brace_span),
-                SyntaxShape::MatchBlock => parse_match_block_expression(working_set, brace_span),
-                _ => parse_record(working_set, brace_span),
-            }
-        }
+        [] => match shape {
+            SyntaxShape::Closure(_) => parse_closure_expression(working_set, shape, span),
+            SyntaxShape::Block => parse_block_expression(working_set, span),
+            SyntaxShape::MatchBlock => parse_match_block_expression(working_set, span),
+            _ => parse_record(working_set, span),
+        },
         [
             Token {
                 contents: TokenContents::Pipe | TokenContents::PipePipe,
@@ -2344,23 +2238,29 @@ pub fn parse_brace_expr(
                 working_set.error(ParseError::Mismatch("block".into(), "closure".into(), span));
                 return Expression::garbage(working_set, span);
             }
-            parse_closure_expression(working_set, shape, brace_span)
+            parse_closure_expression(working_set, shape, span)
         }
         [_, third, ..] if working_set.get_span_contents(third.span) == b":" => {
+            parse_full_cell_path(working_set, None, span)
+        }
+        [second, third, ..]
+            if working_set.get_span_contents(second.span) == b"}"
+                && working_set.get_span_contents(third.span).starts_with(b".") =>
+        {
             parse_full_cell_path(working_set, None, span)
         }
         [second, ..] => {
             let second_bytes = working_set.get_span_contents(second.span);
             match shape {
-                SyntaxShape::Closure(_) => parse_closure_expression(working_set, shape, brace_span),
-                SyntaxShape::Block => parse_block_expression(working_set, brace_span),
-                SyntaxShape::MatchBlock => parse_match_block_expression(working_set, brace_span),
+                SyntaxShape::Closure(_) => parse_closure_expression(working_set, shape, span),
+                SyntaxShape::Block => parse_block_expression(working_set, span),
+                SyntaxShape::MatchBlock => parse_match_block_expression(working_set, span),
                 _ if second_bytes.starts_with(b"...")
                     && second_bytes.get(3).is_some_and(|c| b"${(".contains(c)) =>
                 {
-                    parse_record(working_set, brace_span)
+                    parse_record(working_set, span)
                 }
-                SyntaxShape::Any => parse_closure_expression(working_set, shape, brace_span),
+                SyntaxShape::Any => parse_closure_expression(working_set, shape, span),
                 _ => {
                     working_set.error(ParseError::ExpectedWithStringMsg(
                         format!("non-block value: {shape}"),
