@@ -2243,14 +2243,13 @@ pub fn parse_brace_expr(
         [_, third, ..] if working_set.get_span_contents(third.span) == b":" => {
             parse_full_cell_path(working_set, None, span)
         }
-        [second, third, ..]
-            if working_set.get_span_contents(second.span) == b"}"
-                && working_set.get_span_contents(third.span).starts_with(b".") =>
-        {
-            parse_full_cell_path(working_set, None, span)
-        }
         [second, ..] => {
             let second_bytes = working_set.get_span_contents(second.span);
+            // For edge case of `{}.foo?`, #17896
+            if second_bytes == b"}" {
+                return parse_full_cell_path(working_set, None, span);
+            }
+
             match shape {
                 SyntaxShape::Closure(_) => parse_closure_expression(working_set, shape, span),
                 SyntaxShape::Block => parse_block_expression(working_set, span),
