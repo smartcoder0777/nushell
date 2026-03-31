@@ -1529,4 +1529,38 @@ mod tests {
             vec!["example=true".to_string(), "pipefail=false".to_string()]
         );
     }
+
+    #[test]
+    fn experimental_options_accept_multiple_formats_and_boolean_variants() {
+        let args = vec![
+            OsString::from("nu"),
+            OsString::from("--experimental-options"),
+            OsString::from("[example, pipefail=true, native-clip=false]"),
+            OsString::from("--experimental-options"),
+            OsString::from("reorder-cell-paths"),
+            OsString::from("--experimental-options"),
+            OsString::from("[enforce-runtime-annotations=false, cell-path-types=true]"),
+            OsString::from("script.nu"),
+        ];
+
+        let parsed = parse_cli_args(args).expect("should parse args");
+        assert_eq!(parsed.script_name, "script.nu");
+        assert_eq!(
+            parsed
+                .nu
+                .experimental_options
+                .expect("experimental options")
+                .iter()
+                .map(|v| v.item.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "example".to_string(),
+                "pipefail=true".to_string(),
+                "native-clip=false".to_string(),
+                "reorder-cell-paths".to_string(),
+                "enforce-runtime-annotations=false".to_string(),
+                "cell-path-types=true".to_string(),
+            ]
+        );
+    }
 }
