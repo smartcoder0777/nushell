@@ -64,12 +64,6 @@
 //! nu --experimental-options '[example=true]' script.nu
 //! ```
 //!
-//! You can still use `--` to separate flags from the script path explicitly:
-//!
-//! ```sh
-//! nu --experimental-options '[example=true]' -- script.nu
-//! ```
-//!
 //! # For Embedders
 //!
 //! If you're embedding Nushell, prefer using [`parse_env`] or [`parse_iter`] to load options.
